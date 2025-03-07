@@ -38,7 +38,7 @@ __all__ = [
 ]
 
 
-def harmonic_average(hubbard: Tensor) -> Tensor:
+def harmonic_average(hubbard: Tensor, hubbard2: Tensor | None = None) -> Tensor:
     """
     Harmonic averaging function for hardnesses in GFN1-xTB.
 
@@ -53,10 +53,14 @@ def harmonic_average(hubbard: Tensor) -> Tensor:
         Harmonic average of the Hubbard parameters.
     """
     hubbard1 = storch.reciprocal(hubbard)
-    return 2.0 / (hubbard1.unsqueeze(-1) + hubbard1.unsqueeze(-2))
+    if hubbard2 is not None:
+        hubbard2_ = storch.reciprocal(hubbard2)
+        return 2.0 / (hubbard1.unsqueeze(-1) + hubbard2_.unsqueeze(-2))
+    else:
+        return 2.0 / (hubbard1.unsqueeze(-1) + hubbard1.unsqueeze(-2))
 
 
-def arithmetic_average(hubbard: Tensor) -> Tensor:
+def arithmetic_average(hubbard: Tensor, hubbard2: Tensor | None = None) -> Tensor:
     """
     Arithmetic averaging function for hardnesses in GFN1-xTB.
 
@@ -70,7 +74,10 @@ def arithmetic_average(hubbard: Tensor) -> Tensor:
     Tensor
         Arithmetic average of the Hubbard parameters.
     """
-    return 0.5 * (hubbard.unsqueeze(-1) + hubbard.unsqueeze(-2))
+    if hubbard2 is None:
+        return 0.5 * (hubbard.unsqueeze(-1) + hubbard.unsqueeze(-2))
+    else:
+        return 0.5 * (hubbard.unsqueeze(-1) + hubbard2.unsqueeze(-2))
 
 
 def geometric_average(hubbard: Tensor) -> Tensor:
