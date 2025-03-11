@@ -49,7 +49,7 @@ class BaseHamiltonian(HamiltonianABC, TensorLike):
     unique: Tensor
     """Unique species of the system."""
 
-    par: Param
+    par: Param | dict
     """Representation of parametrization of xtb model."""
 
     ihelp: IndexHelper
@@ -78,6 +78,8 @@ class BaseHamiltonian(HamiltonianABC, TensorLike):
     cn: None | CNFunction
     """Coordination number function."""
 
+    independent_params: bool
+
     __slots__ = [
         "numbers",
         "unique",
@@ -92,6 +94,7 @@ class BaseHamiltonian(HamiltonianABC, TensorLike):
         "valence",
         "en",
         "rad",
+        "independent_params",
     ]
 
     def __init__(
@@ -101,9 +104,12 @@ class BaseHamiltonian(HamiltonianABC, TensorLike):
         ihelp: IndexHelper,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        independent_params: bool = False,
         **_,
     ) -> None:
         super().__init__(device, dtype)
+
+        self.independent_params = independent_params
 
         # check device of input tensors
         if any(tensor.device != self.device for tensor in (numbers, ihelp)):

@@ -50,6 +50,7 @@ def new_hcore(
     ihelp: IndexHelper,
     device: torch.device | None = None,
     dtype: torch.dtype | None = None,
+    independent_params: bool = False,
 ) -> GFN1Hamiltonian | GFN2Hamiltonian:
     if par.meta is None:
         raise ValueError(
@@ -65,10 +66,14 @@ def new_hcore(
         )
 
     if par.meta.name.casefold() in ("gfn1-xtb", "gfn1"):
-        return new_hcore_gfn1(numbers, ihelp, par, device=device, dtype=dtype)
+        return new_hcore_gfn1(numbers, ihelp, par, independent_params=independent_params,
+                              device=device, dtype=dtype)
 
     if par.meta.name.casefold() in ("gfn2-xtb", "gfn2"):
-        return new_hcore_gfn2(numbers, ihelp, par, device=device, dtype=dtype)
+        if not independent_params:
+            raise NotImplementedError
+        return new_hcore_gfn2(numbers, ihelp, par, independent_params=independent_params,
+                              device=device, dtype=dtype)
 
     raise ValueError(f"Unsupported Hamiltonian type: {par.meta.name}")
 
@@ -79,6 +84,7 @@ def new_hcore_gfn1(
     par: Param | None = None,
     device: torch.device | None = None,
     dtype: torch.dtype | None = None,
+    independent_params: bool = False
 ) -> GFN1Hamiltonian:
     # pylint: disable=import-outside-toplevel
     from dxtb._src.xtb.gfn1 import GFN1Hamiltonian as Hamiltonian
@@ -87,7 +93,8 @@ def new_hcore_gfn1(
         # pylint: disable=import-outside-toplevel
         from dxtb import GFN1_XTB as par
 
-    return Hamiltonian(numbers, par, ihelp, device=device, dtype=dtype)
+    return Hamiltonian(numbers, par, ihelp, independent_params=independent_params,
+                       device=device, dtype=dtype)
 
 
 def new_hcore_gfn2(

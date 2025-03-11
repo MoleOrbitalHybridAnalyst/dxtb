@@ -50,13 +50,19 @@ class GFN1Hamiltonian(BaseHamiltonian):
     def __init__(
         self,
         numbers: Tensor,
-        par: Param,
+        par: Param | dict,
         ihelp: IndexHelper,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        independent_params: bool = False,
         **kwargs: Any,
     ) -> None:
-        super().__init__(numbers, par, ihelp, device, dtype)
+        if type(par) is dict:
+            super().__init__(numbers, par['xtbpar'], ihelp,
+                             device, dtype, independent_params=independent_params)
+        else:
+            super().__init__(numbers, par, ihelp,
+                             device, dtype, independent_params=independent_params)
 
         if self.par.hamiltonian is None:
             raise RuntimeError("Parametrization does not specify Hamiltonian.")
@@ -66,9 +72,14 @@ class GFN1Hamiltonian(BaseHamiltonian):
         self.en = self._get_elem_param("en")
 
         # shell-resolved element parameters
-        self.kcn = self._get_elem_param("kcn")
-        self.selfenergy = self._get_elem_param("levels")
-        self.shpoly = self._get_elem_param("shpoly")
+        if independent_params:
+            self.kcn = par["kcn"]
+            self.selfenergy = par["selfenergy"]
+            self.shpoly = par["shpoly"]
+        else:
+            self.kcn = self._get_elem_param("kcn")
+            self.selfenergy = self._get_elem_param("levels")
+            self.shpoly = self._get_elem_param("shpoly")
         self.refocc = self._get_elem_param("refocc")
         self.valence = self._get_elem_valence()
 
@@ -300,12 +311,18 @@ class GFN1Hamiltonian(BaseHamiltonian):
         else:
             cn = self.cn(self.numbers, positions)
 
-        kcn = self.ihelp.spread_ushell_to_shell(self.kcn)
+        if self.independent_params:
+            kcn = self.kcn
+        else:
+            kcn = self.ihelp.spread_ushell_to_shell(self.kcn)
 
         # formula differs from paper to be consistent with GFN2 -> "kcn" adapted
-        selfenergy = self.ihelp.spread_ushell_to_shell(
-            self.selfenergy
-        ) - kcn * self.ihelp.spread_atom_to_shell(cn)
+        if self.independent_params:
+            selfenergy = self.selfenergy - kcn * self.ihelp.spread_atom_to_shell(cn)
+        else:
+            selfenergy = self.ihelp.spread_ushell_to_shell(
+                self.selfenergy
+            ) - kcn * self.ihelp.spread_atom_to_shell(cn)
 
         # ----------------------
         # Eq.24: PI(R_AB, l, l')
@@ -319,7 +336,10 @@ class GFN1Hamiltonian(BaseHamiltonian):
             (-2, -1),
         )
 
-        shpoly = self.ihelp.spread_ushell_to_shell(self.shpoly)
+        if self.independent_params:
+            shpoly = self.shpoly
+        else:
+            shpoly = self.ihelp.spread_ushell_to_shell(self.shpoly)
         var_pi = (1.0 + shpoly.unsqueeze(-1) * rr_shell) * (
             1.0 + shpoly.unsqueeze(-2) * rr_shell
         )
@@ -468,7 +488,10 @@ class GFN1Hamiltonian(BaseHamiltonian):
             (-2, -1),
         )
 
-        shpoly = self.ihelp.spread_ushell_to_shell(self.shpoly)
+        if self.independent_params:
+            shpoly = self.shpoly
+        else:
+            shpoly = self.ihelp.spread_ushell_to_shell(self.shpoly)
         shpoly_a = shpoly.unsqueeze(-1)
         tmp_a = 1.0 + shpoly_a * rr_shell
         shpoly_b = shpoly.unsqueeze(-2)
@@ -480,10 +503,14 @@ class GFN1Hamiltonian(BaseHamiltonian):
         # ------------
 
         # `kcn` differs from paper (Eq.29) to be consistent with GFN2
-        kcn = self.ihelp.spread_ushell_to_shell(self.kcn)
-        selfenergy = self.ihelp.spread_ushell_to_shell(
-            self.selfenergy
-        ) - kcn * self.ihelp.spread_atom_to_shell(cn)
+        if self.independent_params:
+            kcn = self.kcn
+            selfenergy = self.selfenergy - kcn * self.ihelp.spread_atom_to_shell(cn)
+        else:
+            kcn = self.ihelp.spread_ushell_to_shell(self.kcn)
+            selfenergy = self.ihelp.spread_ushell_to_shell(
+                self.selfenergy
+            ) - kcn * self.ihelp.spread_atom_to_shell(cn)
 
         var_h = torch.where(
             mask_shell,
@@ -581,7 +608,10 @@ class GFN1Hamiltonian(BaseHamiltonian):
         # ----------------------------------------------------------------------
 
         # `kcn` differs from paper (Eq.29) to be consistent with GFN2
-        dsedcn = -self.ihelp.spread_ushell_to_shell(self.kcn).unsqueeze(-2)
+        if self.independent_params:
+            dsedcn = -self.kcn.unsqueeze(-2)
+        else:
+            dsedcn = -self.ihelp.spread_ushell_to_shell(self.kcn).unsqueeze(-2)
 
         # avoid symmetric matrix by only passing `dsedcn` vector, which must be
         # unsqueeze(-2)'d for batched calculations

@@ -261,6 +261,7 @@ class EnergyCalculator(BaseCalculator):
             self.opts.scf,
             intmats,
             self.integrals.hcore.refocc,
+            init_charges=kwargs.get("init_charges", None)
         )
 
         timer.stop("SCF")

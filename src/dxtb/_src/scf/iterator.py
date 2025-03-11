@@ -60,6 +60,7 @@ def solve(
     config: ConfigSCF,
     integrals: IntegralMatrices,
     refocc: Tensor,
+    init_charges: Tensor | None = None,
     *args: Any,
     **kwargs: Any,
 ) -> SCFResult:
@@ -93,7 +94,10 @@ def solve(
         Orbital-resolved partial charges vector.
     """
     n0, occupation = get_refocc(refocc, chrg, spin, ihelp)
-    charges = get_guess(numbers, positions, chrg, ihelp, config.guess)
+    if init_charges is not None:
+        charges = init_charges
+    else:
+        charges = get_guess(numbers, positions, chrg, ihelp, config.guess)
 
     if not isinstance(config.scf_mode, int):
         raise ValueError(

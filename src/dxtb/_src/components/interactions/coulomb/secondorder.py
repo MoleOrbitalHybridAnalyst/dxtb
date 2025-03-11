@@ -173,12 +173,15 @@ class ES2(Interaction):
     shell_resolved: bool
     """Electrostatics is shell-resolved (default: ``True``)."""
 
+    independent_params: bool
+
     __slots__ = [
         "hubbard",
         "lhubbard",
         "average",
         "gexp",
         "shell_resolved",
+        "independent_params",
     ]
 
     def __init__(
@@ -188,6 +191,7 @@ class ES2(Interaction):
         average: AveragingFunction = harmonic_average,
         gexp: Tensor = torch.tensor(xtb.DEFAULT_ES2_GEXP),
         shell_resolved: bool = True,
+        independent_params: bool = False,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
@@ -199,6 +203,7 @@ class ES2(Interaction):
         self.average = average
 
         self.shell_resolved = shell_resolved and lhubbard is not None
+        self.independent_params = independent_params
 
     # pylint: disable=unused-argument
     @override
@@ -264,7 +269,7 @@ class ES2(Interaction):
         return self.cache
 
     def get_atom_coulomb_matrix(
-        self, numbers: Tensor, positions: Tensor, ihelp: IndexHelper
+        self, numbers: Tensor, positions: Tensor, ihelp: IndexHelper,
     ) -> Tensor:
         """
         Calculate the atom-resolved Coulomb matrix.
@@ -283,6 +288,9 @@ class ES2(Interaction):
         Tensor
             Coulomb matrix.
         """
+        if self.independent_params:
+            raise NotImplementedError()
+
         # only calculate mask once and save it for backward
         mask = real_pairs(numbers, mask_diagonal=True)
 
@@ -334,6 +342,7 @@ class ES2(Interaction):
             self.lhubbard,
             self.gexp,
             self.average,
+            self.independent_params
         )
         # mat = CoulombMatrixAG(
         #     mask,
@@ -770,6 +779,7 @@ def coulomb_matrix_shell(
     lhubbard: Tensor,
     gexp: Tensor,
     average: AveragingFunction,
+    independent_params: bool
 ) -> Tensor:
     """
     Calculate the shell-resolved Coulomb matrix.
@@ -793,6 +803,8 @@ def coulomb_matrix_shell(
     average: AveragingFunction
         Function to use for averaging the Hubbard parameters (default:
         :func:`dxtb.components.interactions.coulomb.average.harmonic_average`).
+    independent_params: Bool
+        If hubbard and lhubbard be atom-specific instead of element-specific
 
     Returns
     -------
@@ -803,8 +815,11 @@ def coulomb_matrix_shell(
     zero = torch.tensor(0.0, **dd)
     eps = torch.tensor(torch.finfo(positions.dtype).eps, **dd)
 
-    lh = ihelp.spread_ushell_to_shell(lhubbard)
-    h = lh * ihelp.spread_uspecies_to_shell(hubbard)
+    if independent_params:
+        h = lhubbard * hubbard
+    else:
+        lh = ihelp.spread_ushell_to_shell(lhubbard)
+        h = lh * ihelp.spread_uspecies_to_shell(hubbard)
 
     dist = storch.cdist(positions, positions, p=2)
 
@@ -1018,10 +1033,11 @@ class CoulombMatrixAG(torch.autograd.Function):
 
 def new_es2(
     numbers: Tensor,
-    par: Param,
+    par: Param | dict,
     shell_resolved: bool = True,
     device: torch.device | None = None,
     dtype: torch.dtype | None = None,
+    independent_params: bool = False,
 ) -> ES2 | None:
     """
     Create new instance of :class:`.ES2`.
@@ -1040,6 +1056,10 @@ def new_es2(
     ES2 | None
         Instance of the ES2 class or ``None`` if no ES2 is used.
     """
+    if type(par) is dict:
+        hubbard = par['hubbard']
+        lhubbard = par['lhubbard']
+        par = par['xtbpar']
     if hasattr(par, "charge") is False or par.charge is None:
         return None
 
@@ -1055,14 +1075,20 @@ def new_es2(
         "dtype": dtype if dtype is not None else get_default_dtype(),
     }
 
-    unique = torch.unique(numbers)
-    hubbard = get_elem_param(unique, par.element, "gam", **dd)
-    lhubbard = (
-        get_elem_param(unique, par.element, "lgam", **dd)
-        if shell_resolved is True
-        else None
-    )
+    if independent_params:
+        pass
+    else:
+        unique = torch.unique(numbers)
+        hubbard = get_elem_param(unique, par.element, "gam", **dd)
+        lhubbard = (
+            get_elem_param(unique, par.element, "lgam", **dd)
+            if shell_resolved is True
+            else None
+        )
+
     average = averaging_function[par.charge.effective.average]
     gexp = torch.tensor(par.charge.effective.gexp, **dd)
 
-    return ES2(hubbard, lhubbard, average, gexp, **dd)
+    return ES2(
+        hubbard, lhubbard, average, gexp,
+        independent_params=independent_params, **dd)

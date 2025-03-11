@@ -97,7 +97,9 @@ class BaseRepulsionCache(ClassicalCache):
     mask: Tensor
     """Mask for padding from numbers."""
 
-    __slots__ = ["mask", "arep", "zeff", "kexp"]
+    independent_params: bool
+
+    __slots__ = ["mask", "arep", "zeff", "kexp", "independent_params"]
 
     def __init__(
         self,
@@ -155,6 +157,7 @@ class BaseRepulsion(Classical):
         cutoff: float = xtb.DEFAULT_REPULSION_CUTOFF,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        independent_params: bool = False
     ) -> None:
         super().__init__(device, dtype)
 
@@ -166,6 +169,8 @@ class BaseRepulsion(Classical):
         if klight is not None:
             klight = klight.to(self.device).type(self.dtype)
         self.klight = klight
+
+        self.independent_params = independent_params
 
     @override
     def get_cache(
@@ -209,8 +214,12 @@ class BaseRepulsion(Classical):
         self._cachevars = cachvars
 
         # spread
-        arep = ihelp.spread_uspecies_to_atom(self.arep)
-        zeff = ihelp.spread_uspecies_to_atom(self.zeff)
+        if self.independent_params:
+            arep = self.arep
+            zeff = self.zeff
+        else:
+            arep = ihelp.spread_uspecies_to_atom(self.arep)
+            zeff = ihelp.spread_uspecies_to_atom(self.zeff)
         kexp = ihelp.spread_uspecies_to_atom(
             self.kexp.expand(torch.unique(numbers).shape)
         )

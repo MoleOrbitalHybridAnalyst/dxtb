@@ -39,11 +39,12 @@ __all__ = ["new_repulsion"]
 
 def new_repulsion(
     numbers: Tensor,
-    par: Param,
+    par: Param | dict,
     cutoff: float = xtb.DEFAULT_REPULSION_CUTOFF,
     with_analytical_gradient: bool = False,
     device: torch.device | None = None,
     dtype: torch.dtype | None = None,
+    independent_params: bool = False
 ) -> Repulsion | None:
     """
     Create new instance of Repulsion class.
@@ -91,10 +92,16 @@ def new_repulsion(
     )
 
     # get parameters for unique species
-    unique = torch.unique(numbers)
-    arep = get_elem_param(unique, par.element, "arep", pad_val=0, **dd)
-    zeff = get_elem_param(unique, par.element, "zeff", pad_val=0, **dd)
+    if independent_params:
+        arep = par["arep"]
+        zeff = par["zeff"]
+    else:
+        unique = torch.unique(numbers)
+        arep = get_elem_param(unique, par.element, "arep", pad_val=0, **dd)
+        zeff = get_elem_param(unique, par.element, "zeff", pad_val=0, **dd)
 
     if with_analytical_gradient is True:
-        return RepulsionAnalytical(arep, zeff, kexp, klight, cutoff, **dd)
-    return Repulsion(arep, zeff, kexp, klight, cutoff, **dd)
+        return RepulsionAnalytical(arep, zeff, kexp, klight, cutoff,
+                                   independent_params=independent_params, **dd)
+    return Repulsion(arep, zeff, kexp, klight, cutoff,
+                     independent_params=independent_params, **dd)

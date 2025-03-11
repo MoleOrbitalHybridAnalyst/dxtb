@@ -119,6 +119,8 @@ class GCEMPBC(Interaction):
     Ls: Tensor
     """ lattice vectors needed in Ewald real-space """
 
+    independent_params: bool
+
     __slots__ = [
         "hubbard",
         "lhubbard",
@@ -130,7 +132,8 @@ class GCEMPBC(Interaction):
         "average",
         "eta",
         "mesh",
-        "Ls"
+        "Ls",
+        "independent_params"
     ]
 
     def __init__(
@@ -145,6 +148,7 @@ class GCEMPBC(Interaction):
         average: AveragingFunction = harmonic_average,
         device = None,
         dtype = None,
+        independent_params: bool = False,
         ):
         super().__init__(device, dtype)
 
@@ -157,6 +161,7 @@ class GCEMPBC(Interaction):
         self.rcut_ewald = rcut_ewald
         self.setup_ewald_params()
         self.average = average
+        self.independent_params = independent_params
 
     @property
     def vol(self):
@@ -311,8 +316,11 @@ class GCEMPBC(Interaction):
         dd: DD = {"device": positions.device, "dtype": positions.dtype}
         eps = torch.tensor(torch.finfo(positions.dtype).eps, **dd)
 
-        lh = ihelp.spread_ushell_to_shell(self.lhubbard)
-        h = lh * ihelp.spread_uspecies_to_shell(self.hubbard)
+        if self.independent_params:
+            h = self.hubbard * self.lhubbard
+        else:
+            lh = ihelp.spread_ushell_to_shell(self.lhubbard)
+            h = lh * ihelp.spread_uspecies_to_shell(self.hubbard)
 
         mm_coords = self.Ls[None] + self.mm_coords[:,None,:] # iLx
         dist12 = torch.norm(
@@ -403,7 +411,7 @@ def cartesian_prod(arrays):
 
 def new_gcempbc(
         numbers: Tensor,
-        par: Param,
+        par: Param | dict,
         mm_charges: Tensor,
         mm_coords: Tensor,
         mm_hubbard: Tensor,
@@ -411,7 +419,8 @@ def new_gcempbc(
         rcut_ewald: torch.double,
         average: AveragingFunction | None = None,
         device: torch.device | None = None,
-        dtype: torch.dtype | None = None
+        dtype: torch.dtype | None = None,
+        independent_params: bool = False,
 ) -> GCEMPBC | None:
     """
     Create new instance of :class:`.GCEMPBC`.
@@ -438,6 +447,10 @@ def new_gcempbc(
     GCEMPBC | None
         Instance of the GCEMPBC class or ``None`` if no GCEMPBC is used.
     """
+    if type(par) is dict:
+        hubbard = par['hubbard']
+        lhubbard = par['lhubbard']
+        par = par['xtbpar']
     if hasattr(par, "charge") is False or par.charge is None:
         return None
 
@@ -453,9 +466,12 @@ def new_gcempbc(
         "dtype": dtype if dtype is not None else get_default_dtype(),
     }
 
-    unique = torch.unique(numbers)
-    hubbard = get_elem_param(unique, par.element, "gam", **dd)
-    lhubbard = get_elem_param(unique, par.element, "lgam", **dd)
+    if independent_params:
+        pass
+    else:
+        unique = torch.unique(numbers)
+        hubbard = get_elem_param(unique, par.element, "gam", **dd)
+        lhubbard = get_elem_param(unique, par.element, "lgam", **dd)
     if average is None:
         average = averaging_function[par.charge.effective.average]
 
@@ -463,4 +479,6 @@ def new_gcempbc(
         hubbard, lhubbard,
         mm_charges, mm_coords, mm_hubbard,
         box, rcut_ewald,
-        average, **dd)
+        average,
+        independent_params=independent_params,
+        **dd)

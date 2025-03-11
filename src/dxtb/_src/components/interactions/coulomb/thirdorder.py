@@ -149,16 +149,21 @@ class ES3(Interaction):
     hubbard_derivs: Tensor
     """Hubbard derivatives of all atoms."""
 
-    __slots__ = ["hubbard_derivs"]
+    independent_params: bool
+
+    __slots__ = ["hubbard_derivs", "independent_params"]
 
     def __init__(
         self,
         hubbard_derivs: Tensor,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        independent_params: bool = False,
     ) -> None:
         super().__init__(device, dtype)
         self.hubbard_derivs = hubbard_derivs
+
+        self.independent_params = independent_params
 
     # pylint: disable=unused-argument
     @override
@@ -212,7 +217,10 @@ class ES3(Interaction):
         # if the cache is built, store the cachevar for validation
         self._cachevars = cachvars
 
-        hd = ihelp.spread_uspecies_to_atom(self.hubbard_derivs)
+        if self.independent_params:
+            hd = self.hubbard_derivs
+        else:
+            hd = ihelp.spread_uspecies_to_atom(self.hubbard_derivs)
         self.cache = ES3Cache(hd)
 
         return self.cache
@@ -264,9 +272,10 @@ class ES3(Interaction):
 
 def new_es3(
     numbers: Tensor,
-    par: Param,
+    par: Param | dict,
     device: torch.device | None = None,
     dtype: torch.dtype | None = None,
+    independent_params: bool = False,
 ) -> ES3 | None:
     """
     Create new instance of :class:`.ES3`.
@@ -284,6 +293,10 @@ def new_es3(
         Instance of the :class:`.ES3` class or ``None`` if no :class:`.ES3` is
         used.
     """
+
+    if type(par) is dict:
+        hubbard_derivs = par['hubbard_derivs']
+        par = par['xtbpar']
 
     if hasattr(par, "thirdorder") is False or par.thirdorder is None:
         return None
@@ -306,8 +319,11 @@ def new_es3(
         "dtype": dtype if dtype is not None else get_default_dtype(),
     }
 
-    hubbard_derivs = get_elem_param(
-        torch.unique(numbers), par.element, "gam3", **dd
-    )
+    if independent_params:
+        pass
+    else:
+        hubbard_derivs = get_elem_param(
+            torch.unique(numbers), par.element, "gam3", **dd
+        )
 
-    return ES3(hubbard_derivs, **dd)
+    return ES3(hubbard_derivs, independent_params=independent_params, **dd)
