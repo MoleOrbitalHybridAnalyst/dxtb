@@ -349,19 +349,12 @@ class GCEMPBC(Interaction):
         ## QM dip - MM gc
         ekR12 = torch.exp(-einsum("ijL,ij->ijL", dist12**2, avg12d**2))
         Tij = torch.special.erf(einsum("ijL,ij->ijL", dist12, avg12d)) / dist12
-        invr3  = ( Tij + 1.1283791670955126 * einsum("ijL,ij->ijL", ekR12, avg12d) ) / dist12**2  # 1.1283791670955126 = 2/sqrt(pi)
+        invr3  = ( -Tij + 1.1283791670955126 * einsum("ijL,ij->ijL", ekR12, avg12d) ) / dist12**2  # 1.1283791670955126 = 2/sqrt(pi)
         ## QM dip - MM ewald gc
         ekR12 = torch.exp(-dist12**2 * self.eta**2)
         Tij = torch.special.erf(dist12 * self.eta) / dist12
-        invr3 -= ( Tij + 1.1283791670955126 * einsum("ijL,ij->ijL", ekR12, avg12d) ) / dist12**2
-        dippot_rs = -einsum("ijLx,ijL,j->ix", R12, invr3, self.mm_charges)
-        # TODO test 
-        # _erfR12 = torch.special.erf(einsum("ijL,ij->ijL", dist12, avg12d))
-        # _erfRewald12 = torch.special.erf(dist12 * self.eta)
-        # _mat12 = (_erfR12 - _erfRewald12) / _dist12
-        # _mat12 = torch.sum(_mat12, dim=-1) # sum over cells
-        # _pot_rs = einsum("ij,j->i", _mat12, self.mm_charges)
-        # check torch.autograd.grad(_pot_rs, positions, grad_outputs=torch.ones_like(_pot_rs)) == dippot_rs
+        invr3 -= ( -Tij + 1.1283791670955126 * ekR12 * self.eta ) / dist12**2
+        dippot_rs = einsum("ijLx,ijL,j->ix", R12, invr3, self.mm_charges)
         ## QM - QM images
         erfR11 = torch.special.erf(einsum("ijL,ij->ijL", dist11_shell, avg11))
         erfRewald11 = torch.special.erf(dist11_shell * self.eta)
@@ -409,7 +402,7 @@ class GCEMPBC(Interaction):
 
     @override
     def get_dipole_energy(self, charges: Tensor, cache: GCEMPBCCache) -> Tensor:
-        raise einsum('ix,ix->i', charges, cache.dippot)
+        return einsum('ix,ix->i', charges, cache.dippot)
 
     @override
     def get_shell_potential(self, charges: Tensor, cache: GCEMPBCCache) -> Tensor:

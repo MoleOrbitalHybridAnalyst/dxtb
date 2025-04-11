@@ -49,6 +49,7 @@ from dxtb._src.components.interactions import Interaction, InteractionList
 from dxtb._src.components.interactions.container import Charges, Potential
 from dxtb._src.components.interactions.coulomb import new_es2, new_es3
 from dxtb._src.components.interactions.field import efield as efield
+from dxtb._src.components.interactions.qmmm.gcem_pbc import LABEL_GCEMPBC
 from dxtb._src.components.interactions.field import efieldgrad as efield_grad
 from dxtb._src.constants import defaults
 from dxtb._src.param import Param
@@ -608,6 +609,16 @@ class BaseCalculator(GetPropertiesMixin, TensorLike):
                 OutputHandler.warn(
                     "Setting integral level to DIPOLE "
                     f"({labels.INTLEVEL_DIPOLE}) due to electric field "
+                    "interaction."
+                )
+            self.opts.ints.level = max(
+                labels.INTLEVEL_DIPOLE, self.opts.ints.level
+            )
+        if LABEL_GCEMPBC in self.interactions.labels:
+            if self.opts.ints.level < labels.INTLEVEL_DIPOLE:
+                OutputHandler.warn(
+                    "Setting integral level to DIPOLE "
+                    f"({labels.INTLEVEL_DIPOLE}) due to gcem_pbc "
                     "interaction."
                 )
             self.opts.ints.level = max(
