@@ -338,23 +338,35 @@ class GCEMPBC(Interaction):
         avg12d = self.average(dh + eps, self.mm_hubbard + eps)
 
         # Ewald real-space
-        ## QM pc - MM
-        erfR12 = torch.special.erf(einsum("ijL,ij->ijL", dist12_shell, avg12))
-        erfRewald12 = torch.special.erf(dist12_shell * self.eta)
-        mat12 = (erfR12 - erfRewald12) / dist12_shell
-        mat12 = torch.sum(mat12, dim=-1) # sum over cells
-        pot_rs = einsum("ij,j->i", mat12, self.mm_charges)
-        # QM dip - MM
-        # TODO reduce duplicated work done here
-        ## QM dip - MM gc
-        ekR12 = torch.exp(-einsum("ijL,ij->ijL", dist12**2, avg12d**2))
-        Tij = torch.special.erf(einsum("ijL,ij->ijL", dist12, avg12d)) / dist12
-        invr3  = ( -Tij + 1.1283791670955126 * einsum("ijL,ij->ijL", ekR12, avg12d) ) / dist12**2  # 1.1283791670955126 = 2/sqrt(pi)
-        ## QM dip - MM ewald gc
-        ekR12 = torch.exp(-dist12**2 * self.eta**2)
+#        ## QM pc - MM
+#        erfR12 = torch.special.erf(einsum("ijL,ij->ijL", dist12_shell, avg12))
+#        erfRewald12 = torch.special.erf(dist12_shell * self.eta)
+#        mat12 = (erfR12 - erfRewald12) / dist12_shell
+#        mat12 = torch.sum(mat12, dim=-1) # sum over cells
+#        pot_rs = einsum("ij,j->i", mat12, self.mm_charges)
+#        # QM dip - MM
+#        # TODO reduce duplicated work done here
+#        ## QM dip - MM gc
+#        ekR12 = torch.exp(-einsum("ijL,ij->ijL", dist12**2, avg12d**2))
+#        Tij = torch.special.erf(einsum("ijL,ij->ijL", dist12, avg12d)) / dist12
+#        invr3  = ( -Tij + 1.1283791670955126 * einsum("ijL,ij->ijL", ekR12, avg12d) ) / dist12**2  # 1.1283791670955126 = 2/sqrt(pi)
+#        ## QM dip - MM ewald gc
+#        ekR12 = torch.exp(-dist12**2 * self.eta**2)
+#        Tij = torch.special.erf(dist12 * self.eta) / dist12
+#        invr3 -= ( -Tij + 1.1283791670955126 * ekR12 * self.eta ) / dist12**2
+#        dippot_rs = einsum("ijLx,ijL,j->ix", R12, invr3, self.mm_charges)
+        ## (QM pc - MM gc) - (QM pc - MM ewald gc)
+        mat12 = torch.special.erf(einsum("ijL,ij->ijL", dist12_shell, avg12)) / dist12_shell
+        pot_rs = einsum("ijL,j->i", mat12, self.mm_charges)
+        ## (QM dip - MM gc)  - (QM dip - MM ewald gc)
         Tij = torch.special.erf(dist12 * self.eta) / dist12
-        invr3 -= ( -Tij + 1.1283791670955126 * ekR12 * self.eta ) / dist12**2
-        dippot_rs = einsum("ijLx,ijL,j->ix", R12, invr3, self.mm_charges)
+        tmp = einsum("ijLx,ijL->ijx", R12,
+                (-torch.special.erf(einsum("ijL,ij->ijL", dist12, avg12d)) / dist12 + \
+                  1.1283791670955126 * einsum("ijL,ij->ijL", torch.exp(-einsum("ijL,ij->ijL", dist12**2, avg12d**2)), avg12d) + \
+                  Tij - 1.1283791670955126 * torch.exp(-dist12**2 * self.eta**2) * self.eta ) / dist12**2,
+        )
+        dippot_rs = einsum("ijx,j->ix", tmp, self.mm_charges)
+        pot_rs -= ihelp.spread_atom_to_shell(einsum("ijL,j->i", Tij, self.mm_charges))
         ## QM - QM images
         erfR11 = torch.special.erf(einsum("ijL,ij->ijL", dist11_shell, avg11))
         erfRewald11 = torch.special.erf(dist11_shell * self.eta)
