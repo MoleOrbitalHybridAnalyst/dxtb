@@ -123,6 +123,8 @@ class GCEMPBC(Interaction):
 
     independent_params: bool
 
+    ewald_precision: float
+
     __slots__ = [
         "hubbard",
         "lhubbard",
@@ -135,7 +137,8 @@ class GCEMPBC(Interaction):
         "eta",
         "mesh",
         "Ls",
-        "independent_params"
+        "independent_params",
+        "ewald_precision",
     ]
 
     def __init__(
@@ -151,6 +154,7 @@ class GCEMPBC(Interaction):
         device = None,
         dtype = None,
         independent_params: bool = False,
+        ewald_precision: float = 1e-6,
         ):
         super().__init__(device, dtype)
 
@@ -161,6 +165,7 @@ class GCEMPBC(Interaction):
         self.mm_hubbard = mm_hubbard.to(**self.dd)
         self.box = box.to(**self.dd)
         self.rcut_ewald = rcut_ewald
+        self.ewald_precision = ewald_precision
         self.setup_ewald_params()
         self.average = average
         self.independent_params = independent_params
@@ -245,7 +250,8 @@ class GCEMPBC(Interaction):
 
     def setup_ewald_params(self):
         """ determine real-space cells, exponents, mesh """
-        self.eta, self.mesh = self.get_ewald_params(self.rcut_ewald, precision=1e-6)
+        self.eta, self.mesh = self.get_ewald_params(
+                self.rcut_ewald, precision=self.ewald_precision)
         self.Ls = self.get_lattice_Ls(self.rcut_ewald)
 
     # pylint: disable=unused-argument
@@ -445,6 +451,7 @@ def new_gcempbc(
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
         independent_params: bool = False,
+        ewald_precision: float = 1e-6,
 ) -> GCEMPBC | None:
     """
     Create new instance of :class:`.GCEMPBC`.
@@ -465,6 +472,8 @@ def new_gcempbc(
         Lattice vectors of unit cell
     rcut_ewald: torch.double
         Real-space cutoff for ewald
+    ewald_precision: float
+        Precision of Ewald
 
     Returns
     -------
@@ -505,4 +514,5 @@ def new_gcempbc(
         box, rcut_ewald,
         average,
         independent_params=independent_params,
+        ewald_precision=ewald_precision,
         **dd)
