@@ -20,10 +20,17 @@ from dxtb._src.typing import (
 from ..base import Interaction, InteractionCache
 from ..coulomb.average import AveragingFunction, averaging_function, harmonic_average
 
+from torch.utils.checkpoint import checkpoint
+
 __all__ = ["GCEMPBC", "LABEL_GCEMPBC", "new_gcempbc"]
 
 
 LABEL_GCEMPBC = "GCEMPBC"
+
+def einsum_gen(pattern):
+    return lambda *args: torch.einsum(pattern, *args)
+def checkpoint_einsum(pattern, *args):
+    return checkpoint(einsum_gen(pattern), *args, use_reentrant=False)
 
 class GCEMPBCCache(InteractionCache, TensorLike):
 
@@ -125,6 +132,8 @@ class GCEMPBC(Interaction):
 
     independent_params: bool
 
+    ewald_precision: float
+
     __slots__ = [
         "hubbard",
         "lhubbard",
@@ -138,7 +147,8 @@ class GCEMPBC(Interaction):
         "eta",
         "mesh",
         "Ls",
-        "independent_params"
+        "independent_params",
+        "ewald_precision",
     ]
 
     def __init__(
@@ -155,6 +165,7 @@ class GCEMPBC(Interaction):
         device = None,
         dtype = None,
         independent_params: bool = False,
+        ewald_precision: float = 1e-6,
         ):
         super().__init__(device, dtype)
 
@@ -166,6 +177,7 @@ class GCEMPBC(Interaction):
         self.mm_hubbard = mm_hubbard.to(**self.dd)
         self.box = box.to(**self.dd)
         self.rcut_ewald = rcut_ewald
+        self.ewald_precision = ewald_precision
         self.setup_ewald_params()
         self.average = average
         self.independent_params = independent_params
@@ -224,7 +236,8 @@ class GCEMPBC(Interaction):
 
     def setup_ewald_params(self):
         """ determine real-space cells, exponents, mesh """
-        self.eta, self.mesh = self.get_ewald_params(self.rcut_ewald, precision=1e-6)
+        self.eta, self.mesh = self.get_ewald_params(
+                self.rcut_ewald, precision=self.ewald_precision)
         self.Ls = self.get_lattice_Ls(self.rcut_ewald)
 
     # pylint: disable=unused-argument
@@ -309,7 +322,9 @@ class GCEMPBC(Interaction):
 
         mm_coords = self.Ls[None] + self.mm_coords[:,None,:] # iLx
         R12 = positions[:,None,None,:] - mm_coords[None] # ijLx
-        dist12 = torch.norm(R12, dim=-1) + eps # ijL
+        dist12 = checkpoint(
+                lambda x: torch.norm(x, dim=-1),
+                R12, use_reentrant=False) + eps
 
         qm_coords = self.Ls[None] + positions[:,None] # jLx
         #dist11 = torch.norm(
@@ -319,8 +334,14 @@ class GCEMPBC(Interaction):
         norm1 = einsum('ix,ix->i', positions, positions)
         norm2 = einsum('jLx,jLx->jL', qm_coords, qm_coords)
         n = norm1[:,None,None] + norm2[None]
-        prod = einsum('ix,jLx->ijL', positions, qm_coords)
-        dist11 = storch.elemental.sqrt(n - 2.0 * prod, eps=eps)
+#        prod = einsum('ix,jLx->ijL', positions, qm_coords)
+        prod = checkpoint_einsum(
+                'ix,jLx->ijL', positions, qm_coords
+                )
+        dist11 = checkpoint(
+                lambda x: storch.elemental.sqrt(x, eps=eps),
+                n - 2.0 * prod,
+                use_reentrant=False)
         dist = storch.cdist(positions, positions, p=2) + eps
 
         dist12_shell = ihelp.spread_atom_to_shell(
@@ -339,19 +360,44 @@ class GCEMPBC(Interaction):
 
         # Ewald real-space
         ## (QM pc - MM gc) - (QM pc - MM ewald gc)
-        mat12 = torch.special.erf(einsum("ijL,ij->ijL", dist12_shell, avg12)) / dist12_shell
-        pot_rs = einsum("ijL,j->i", mat12, self.mm_charges)
+        mat12 = checkpoint(
+                torch.special.erf,
+                checkpoint_einsum("ijL,ij->ijL", dist12_shell, avg12),
+                use_reentrant=False) / dist12_shell
+        pot_rs = checkpoint_einsum("ijL,j->i", mat12, self.mm_charges)
         ## (QM dip - MM gc)  - (QM dip - MM ewald gc)
-        Tij = torch.special.erf(dist12 * self.eta) / dist12
-        tmp = einsum("ijLx,ijL->ijx", R12,
-                (-torch.special.erf(einsum("ijL,ij->ijL", dist12, avg12d)) / dist12 + \
-                  1.1283791670955126 * einsum("ijL,ij->ijL", torch.exp(-einsum("ijL,ij->ijL", dist12**2, avg12d**2)), avg12d) + \
-                  Tij - 1.1283791670955126 * torch.exp(-dist12**2 * self.eta**2) * self.eta ) / dist12**2,
+        Tij = checkpoint(
+                torch.special.erf,
+                dist12 * self.eta,
+                use_reentrant=False) / dist12
+        tmp = checkpoint_einsum("ijLx,ijL->ijx", R12,
+                (-checkpoint(
+                    torch.special.erf,
+                    checkpoint_einsum("ijL,ij->ijL", dist12, avg12d),
+                    use_reentrant=False
+                            ) / dist12 + \
+                  1.1283791670955126 * checkpoint_einsum(
+                                          "ijL,ij->ijL", 
+                                          checkpoint(
+                                                torch.exp,
+                                                -checkpoint_einsum("ijL,ij->ijL", dist12**2, avg12d**2),
+                                                use_reentrant=False
+                                                    ),
+                                          avg12d
+                                                        ) + \
+                  Tij - 1.1283791670955126 * checkpoint(
+                                                    torch.exp,
+                                                    -dist12**2 * self.eta**2,
+                                                    use_reentrant=False
+                                                       ) * self.eta
+                ) / dist12**2,
         )
-        dippot_rs = einsum("ijx,j->ix", tmp, self.mm_charges)
+        dippot_rs = checkpoint_einsum("ijx,j->ix", tmp, self.mm_charges)
         pot_rs -= ihelp.spread_atom_to_shell(einsum("ijL,j->i", Tij, self.mm_charges))
         ## QM - QM images
-        erfR11 = torch.special.erf(einsum("ijL,ij->ijL", dist11_shell, avg11))
+        erfR11 = checkpoint(torch.special.erf,
+                einsum("ijL,ij->ijL", dist11_shell, avg11),
+                use_reentrant=False)
         erfRewald11 = torch.special.erf(dist11_shell * self.eta)
         mat_rs = (erfR11 - erfRewald11) / dist11_shell
         mat_rs = torch.sum(mat_rs, dim=-1) # sum over cells
@@ -364,28 +410,29 @@ class GCEMPBC(Interaction):
         absG2 = torch.where(absG2>0.0, absG2, 1e100)
         coulG = 4*torch.pi / absG2 * weights
         Gpref = torch.exp(-absG2/(4*self.eta**2)) * coulG
-        GvRmm = einsum('gx,ix->ig', Gv, self.mm_coords)
-        cosGvRmm = torch.cos(GvRmm)
-        sinGvRmm = torch.sin(GvRmm)
-        zcosGvRmm = einsum("i,ig->g", self.mm_charges, cosGvRmm)
-        zsinGvRmm = einsum("i,ig->g", self.mm_charges, sinGvRmm)
-        GvRqm = einsum('gx,ix->ig', Gv, positions)
-        cosGvRqm = torch.cos(GvRqm)
-        sinGvRqm = torch.sin(GvRqm)
+        GvRmm = checkpoint_einsum('gx,ix->ig', Gv, self.mm_coords)
+        cosGvRmm = checkpoint(torch.cos, GvRmm, use_reentrant=False)
+        sinGvRmm = checkpoint(torch.sin, GvRmm, use_reentrant=False)
+        zcosGvRmm = checkpoint_einsum("i,ig->g", self.mm_charges, cosGvRmm)
+        zsinGvRmm = checkpoint_einsum("i,ig->g", self.mm_charges, sinGvRmm)
+        GvRqm = checkpoint_einsum(
+            'gx,ix->ig', Gv, positions)
+        cosGvRqm = checkpoint(torch.cos, GvRqm, use_reentrant=False)
+        sinGvRqm = checkpoint(torch.sin, GvRqm, use_reentrant=False)
         ## QM pc - MM Ewald gc
-        pot_ks  = einsum('ig,g->i', cosGvRqm, zcosGvRmm * Gpref) + \
-                    einsum('ig,g->i', sinGvRqm, zsinGvRmm * Gpref)
+        pot_ks  = checkpoint_einsum('ig,g->i', cosGvRqm, zcosGvRmm * Gpref) + \
+                    checkpoint_einsum('ig,g->i', sinGvRqm, zsinGvRmm * Gpref)
         pot_ks = ihelp.spread_atom_to_shell(pot_ks, dim=-1)
         ## QM pc - QM Ewald gc
-        mat_ks  = einsum('ig,jg,g->ij', cosGvRqm, cosGvRqm, Gpref) + \
-                  einsum('ig,jg,g->ij', sinGvRqm, sinGvRqm, Gpref)
+        mat_ks  = checkpoint_einsum('ig,jg,g->ij', cosGvRqm, cosGvRqm, Gpref) + \
+                  checkpoint_einsum('ig,jg,g->ij', sinGvRqm, sinGvRqm, Gpref)
         mat_ks = mat_ks.unsqueeze(2)
         mat_ks = ihelp.spread_atom_to_shell(mat_ks, dim=-3, extra=True)
         mat_ks = ihelp.spread_atom_to_shell(mat_ks, dim=-2, extra=True)
         mat_ks = mat_ks.squeeze()
         # QM dip - MM Ewald gc
-        dippot_ks = -einsum('gx,ig,g->ix', Gv, sinGvRqm, zcosGvRmm * Gpref) + \
-                    einsum('gx,ig,g->ix', Gv, cosGvRqm, zsinGvRmm * Gpref)
+        dippot_ks = -checkpoint_einsum('gx,ig,g->ix', Gv, sinGvRqm, zcosGvRmm * Gpref) + \
+                    checkpoint_einsum('gx,ig,g->ix', Gv, cosGvRqm, zsinGvRmm * Gpref)
 
         return pot_rs + pot_ks, \
                dippot_rs + dippot_ks, \
@@ -397,7 +444,7 @@ class GCEMPBC(Interaction):
 
     @override
     def get_dipole_energy(self, charges: Tensor, cache: GCEMPBCCache) -> Tensor:
-        return einsum('ix,ix->i', charges, cache.dippot)
+        return checkpoint_einsum('ix,ix->i', charges, cache.dippot)
 
     @override
     def get_shell_potential(self, charges: Tensor, cache: GCEMPBCCache) -> Tensor:
@@ -429,6 +476,7 @@ def new_gcempbc(
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
         independent_params: bool = False,
+        ewald_precision: float = 1e-6,
 ) -> GCEMPBC | None:
     """
     Create new instance of :class:`.GCEMPBC`.
@@ -449,6 +497,8 @@ def new_gcempbc(
         Lattice vectors of unit cell
     rcut_ewald: torch.double
         Real-space cutoff for ewald
+    ewald_precision: float
+        Precision of Ewald
 
     Returns
     -------
@@ -491,4 +541,5 @@ def new_gcempbc(
         box, rcut_ewald,
         average,
         independent_params=independent_params,
+        ewald_precision=ewald_precision,
         **dd)
