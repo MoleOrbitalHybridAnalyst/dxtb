@@ -100,7 +100,7 @@ class GCEMPBC(Interaction):
     lhubbard: Tensor
     """ for QM atoms shell-resolved charges """
 
-    diphubbard: Tensor
+    diphubbard: Tensor | None
     """ for QM atom dipoles """
 
     average: AveragingFunction
@@ -155,7 +155,7 @@ class GCEMPBC(Interaction):
         self, 
         hubbard: Tensor,
         lhubbard: Tensor,
-        diphubbard: Tensor,
+        diphubbard: Tensor | None,
         mm_charges: Tensor,
         mm_coords: Tensor,
         mm_hubbard: Tensor,
@@ -171,7 +171,10 @@ class GCEMPBC(Interaction):
 
         self.hubbard = hubbard.to(**self.dd)
         self.lhubbard = lhubbard if lhubbard is None else lhubbard.to(**self.dd)
-        self.diphubbard = diphubbard.to(**self.dd)
+        if diphubbard is not None:
+            self.diphubbard = diphubbard.to(**self.dd)
+        else:
+            self.diphubbard = None
         self.mm_charges = mm_charges.to(**self.dd)
         self.mm_coords = mm_coords.to(**self.dd)
         self.mm_hubbard = mm_hubbard.to(**self.dd)
@@ -318,7 +321,10 @@ class GCEMPBC(Interaction):
         else:
             lh = ihelp.spread_ushell_to_shell(self.lhubbard)
             h = lh * ihelp.spread_uspecies_to_shell(self.hubbard)
-            dh = ihelp.spread_uspecies_to_atom(self.diphubbard)
+            if self.diphubbard is not None:
+                dh = ihelp.spread_uspecies_to_atom(self.diphubbard)
+            else:
+                dh = None
 
         mm_coords = self.Ls[None] + self.mm_coords[:,None,:] # iLx
         R12 = positions[:,None,None,:] - mm_coords[None] # ijLx
@@ -356,7 +362,8 @@ class GCEMPBC(Interaction):
         # averaging function for hardnesses (Hubbard parameter)
         avg12 = self.average(h + eps, self.mm_hubbard + eps)
         avg11 = self.average(h + eps)
-        avg12d = self.average(dh + eps, self.mm_hubbard + eps)
+        if dh is not None:
+            avg12d = self.average(dh + eps, self.mm_hubbard + eps)
 
         # Ewald real-space
         ## (QM pc - MM gc) - (QM pc - MM ewald gc)
@@ -366,34 +373,37 @@ class GCEMPBC(Interaction):
                 use_reentrant=False) / dist12_shell
         pot_rs = checkpoint_einsum("ijL,j->i", mat12, self.mm_charges)
         ## (QM dip - MM gc)  - (QM dip - MM ewald gc)
-        Tij = checkpoint(
-                torch.special.erf,
-                dist12 * self.eta,
-                use_reentrant=False) / dist12
-        tmp = checkpoint_einsum("ijLx,ijL->ijx", R12,
-                (-checkpoint(
+        if dh is not None:
+            Tij = checkpoint(
                     torch.special.erf,
-                    checkpoint_einsum("ijL,ij->ijL", dist12, avg12d),
-                    use_reentrant=False
-                            ) / dist12 + \
-                  1.1283791670955126 * checkpoint_einsum(
-                                          "ijL,ij->ijL", 
-                                          checkpoint(
-                                                torch.exp,
-                                                -checkpoint_einsum("ijL,ij->ijL", dist12**2, avg12d**2),
-                                                use_reentrant=False
-                                                    ),
-                                          avg12d
-                                                        ) + \
-                  Tij - 1.1283791670955126 * checkpoint(
+                    dist12 * self.eta,
+                    use_reentrant=False) / dist12
+            tmp = checkpoint_einsum("ijLx,ijL->ijx", R12,
+                    (-checkpoint(
+                        torch.special.erf,
+                        checkpoint_einsum("ijL,ij->ijL", dist12, avg12d),
+                        use_reentrant=False
+                                ) / dist12 + \
+                      1.1283791670955126 * checkpoint_einsum(
+                                              "ijL,ij->ijL", 
+                                              checkpoint(
                                                     torch.exp,
-                                                    -dist12**2 * self.eta**2,
+                                                    -checkpoint_einsum("ijL,ij->ijL", dist12**2, avg12d**2),
                                                     use_reentrant=False
-                                                       ) * self.eta
-                ) / dist12**2,
-        )
-        dippot_rs = checkpoint_einsum("ijx,j->ix", tmp, self.mm_charges)
-        pot_rs -= ihelp.spread_atom_to_shell(einsum("ijL,j->i", Tij, self.mm_charges))
+                                                        ),
+                                              avg12d
+                                                            ) + \
+                      Tij - 1.1283791670955126 * checkpoint(
+                                                        torch.exp,
+                                                        -dist12**2 * self.eta**2,
+                                                        use_reentrant=False
+                                                           ) * self.eta
+                    ) / dist12**2,
+            )
+            dippot_rs = checkpoint_einsum("ijx,j->ix", tmp, self.mm_charges)
+            pot_rs -= ihelp.spread_atom_to_shell(einsum("ijL,j->i", Tij, self.mm_charges))
+        else:
+            dippot_rs = torch.zeros_like(positions)
         ## QM - QM images
         erfR11 = checkpoint(torch.special.erf,
                 einsum("ijL,ij->ijL", dist11_shell, avg11),
@@ -431,8 +441,11 @@ class GCEMPBC(Interaction):
         mat_ks = ihelp.spread_atom_to_shell(mat_ks, dim=-2, extra=True)
         mat_ks = mat_ks.squeeze()
         # QM dip - MM Ewald gc
-        dippot_ks = -checkpoint_einsum('gx,ig,g->ix', Gv, sinGvRqm, zcosGvRmm * Gpref) + \
-                    checkpoint_einsum('gx,ig,g->ix', Gv, cosGvRqm, zsinGvRmm * Gpref)
+        if dh is not None:
+            dippot_ks = -checkpoint_einsum('gx,ig,g->ix', Gv, sinGvRqm, zcosGvRmm * Gpref) + \
+                        checkpoint_einsum('gx,ig,g->ix', Gv, cosGvRqm, zsinGvRmm * Gpref)
+        else:
+            dippot_ks = torch.zeros_like(positions)
 
         return pot_rs + pot_ks, \
                dippot_rs + dippot_ks, \
@@ -477,6 +490,7 @@ def new_gcempbc(
         dtype: torch.dtype | None = None,
         independent_params: bool = False,
         ewald_precision: float = 1e-6,
+        dipole_coupling: bool = False,
 ) -> GCEMPBC | None:
     """
     Create new instance of :class:`.GCEMPBC`.
@@ -509,6 +523,8 @@ def new_gcempbc(
         hubbard = par['hubbard']
         lhubbard = par['lhubbard']
         diphubbard = par.get('diphubbard', None)
+        if dipole_coupling:
+            assert diphubbard is not None
         par = par['xtbpar']
     if hasattr(par, "charge") is False or par.charge is None:
         return None
@@ -531,7 +547,10 @@ def new_gcempbc(
         unique = torch.unique(numbers)
         hubbard = get_elem_param(unique, par.element, "gam", **dd)
         lhubbard = get_elem_param(unique, par.element, "lgam", **dd)
-        diphubbard = get_elem_param(unique, par.element, "gam", **dd)
+        if dipole_coupling:
+            diphubbard = get_elem_param(unique, par.element, "gam", **dd)
+        else:
+            diphubbard = None
     if average is None:
         average = averaging_function[par.charge.effective.average]
 
