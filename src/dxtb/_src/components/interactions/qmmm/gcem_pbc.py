@@ -373,11 +373,12 @@ class GCEMPBC(Interaction):
                 use_reentrant=False) / dist12_shell
         pot_rs = checkpoint_einsum("ijL,j->i", mat12, self.mm_charges)
         ## (QM dip - MM gc)  - (QM dip - MM ewald gc)
+        Tij = checkpoint(
+                torch.special.erf,
+                dist12 * self.eta,
+                use_reentrant=False) / dist12
+        pot_rs -= ihelp.spread_atom_to_shell(einsum("ijL,j->i", Tij, self.mm_charges))
         if dh is not None:
-            Tij = checkpoint(
-                    torch.special.erf,
-                    dist12 * self.eta,
-                    use_reentrant=False) / dist12
             tmp = checkpoint_einsum("ijLx,ijL->ijx", R12,
                     (-checkpoint(
                         torch.special.erf,
@@ -401,7 +402,6 @@ class GCEMPBC(Interaction):
                     ) / dist12**2,
             )
             dippot_rs = checkpoint_einsum("ijx,j->ix", tmp, self.mm_charges)
-            pot_rs -= ihelp.spread_atom_to_shell(einsum("ijL,j->i", Tij, self.mm_charges))
         else:
             dippot_rs = torch.zeros_like(positions)
         ## QM - QM images
